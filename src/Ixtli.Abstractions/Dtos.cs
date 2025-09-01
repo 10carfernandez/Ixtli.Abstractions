@@ -23,268 +23,214 @@ public enum RateLimitWindow
 	/// </summary>
 	Day
 }
+
 /// <summary>
-/// Represents a named entitlement (feature or limit) granted to a tenant or plan.
+/// Supported signature algorithms for request signing.
 /// </summary>
-public record Entitlement
+public enum SignatureAlg
 {
-	/// <summary>
-	/// The unique key identifying the entitlement (e.g., "maxProjects").
-	/// </summary>
-	public string Key { get; init; }
+	/// <summary>HMAC using SHA-256.</summary>
+	HmacSha256,
 
-	/// <summary>
-	/// The value associated with the entitlement (e.g., "10").
-	/// </summary>
-	public string Value { get; init; }
+	/// <summary>Ed25519 public-key signature.</summary>
+	Ed25519
+}
 
-	/// <summary>
-	/// Initializes a new instance of the <see cref="Entitlement"/> record.
-	/// </summary>
-	/// <param name="key">The unique key for the entitlement.</param>
-	/// <param name="value">The value of the entitlement.</param>
-	public Entitlement(string key, string value)
+/// <summary>
+/// Specification for how a request was signed so verifiers can canonicalize and check values consistently.
+/// </summary>
+/// <param name="Algorithm">The signature algorithm used.</param>
+/// <param name="SignedHeaders">The list of header names (in order) that were included in the signature.</param>
+/// <param name="Canonicalization">A human-readable description of canonicalization rules (informational).</param>
+public sealed record SignatureSpec(SignatureAlg Algorithm, IReadOnlyList<string> SignedHeaders, string Canonicalization = "lowercase-headers;trim;single-space");
+
+/// <summary>
+/// A single entitlement (key/value) granted by a plan.
+/// </summary>
+public record Entitlement(string key, string value)
+{
+	/// <summary>Entitlement key (identifier).</summary>
+	public string Key { get; init; } = key;
+
+	/// <summary>Entitlement raw value.</summary>
+	public string Value { get; init; } = value;
+
+	/// <summary>Try to interpret the entitlement value as a boolean.</summary>
+	public bool? AsBoolean()
 	{
-		Key = key;
-		Value = value;
+		if (bool.TryParse(Value, out var b)) return b;
+		return null;
+	}
+
+	/// <summary>Try to interpret the entitlement value as an integer.</summary>
+	public int? AsInt()
+	{
+		if (int.TryParse(Value, out var i)) return i;
+		return null;
 	}
 }
 
 /// <summary>
-/// Defines the rate limiting policy for a plan or tenant.
+/// Rate limiting policy describing permits for a time window.
 /// </summary>
-public record RateLimitPolicy
+public record RateLimitPolicy(int permitLimit, RateLimitWindow window, int? burst = null, double? refillPerSecond = null)
 {
-	/// <summary>
-	/// The maximum number of permitted actions within the specified window.
-	/// </summary>
-	public int PermitLimit { get; init; }
+	/// <summary>Total allowed permits during the configured window (excluding burst).</summary>
+	public int PermitLimit { get; init; } = permitLimit;
+
+	/// <summary>The canonical window unit used for counting (Second/Minute/Hour/Day).</summary>
+	public RateLimitWindow Window { get; init; } = window;
+
+	/// <summary>Optional burst added to the permit limit allowing short spikes.</summary>
+	public int? Burst { get; init; } = burst;
 
 	/// <summary>
-	/// The time window over which the permit limit applies.
+	/// Optional token-bucket refill rate (tokens per second). When present, evaluators may interpret limits
+	/// using token-bucket semantics instead of fixed windows.
 	/// </summary>
-	public RateLimitWindow Window { get; init; }
-
-	/// <summary>
-	/// The optional burst size allowed above the steady-state limit.
-	/// </summary>
-	public int? Burst { get; init; }
-
-	/// <summary>
-	/// Initializes a new instance of the <see cref="RateLimitPolicy"/> record.
-	/// </summary>
-	/// <param name="permitLimit">The maximum number of permitted actions.</param>
-	/// <param name="window">The time window for the rate limit.</param>
-	/// <param name="burst">The optional burst size.</param>
-	public RateLimitPolicy(int permitLimit, RateLimitWindow window, int? burst = null)
-	{
-		PermitLimit = permitLimit;
-		Window = window;
-		Burst = burst;
-	}
+	public double? RefillPerSecond { get; init; } = refillPerSecond;
 }
 
 /// <summary>
-/// Represents a subscription plan, including its rate limit policy and entitlements.
+/// A plan: bundle of limits and entitlements.
 /// </summary>
-public record Plan
+public record Plan(PlanId id, string name, RateLimitPolicy rateLimit, IReadOnlyList<Entitlement> entitlements)
 {
-	/// <summary>
-	/// The unique identifier for the plan.
-	/// </summary>
-	public PlanId Id { get; init; }
+	/// <summary>Unique identifier for the plan.</summary>
+	public PlanId Id { get; init; } = id;
 
-	/// <summary>
-	/// The display name of the plan.
-	/// </summary>
-	public string Name { get; init; }
+	/// <summary>Human-readable plan name.</summary>
+	public string Name { get; init; } = name;
 
-	/// <summary>
-	/// The rate limit policy associated with the plan.
-	/// </summary>
-	public RateLimitPolicy RateLimit { get; init; }
+	/// <summary>Rate limiting policy for the plan.</summary>
+	public RateLimitPolicy RateLimit { get; init; } = rateLimit;
 
-	/// <summary>
-	/// The entitlements granted by the plan.
-	/// </summary>
-	public IReadOnlyList<Entitlement> Entitlements { get; init; }
-
-	/// <summary>
-	/// Initializes a new instance of the <see cref="Plan"/> record.
-	/// </summary>
-	/// <param name="id">The unique identifier for the plan.</param>
-	/// <param name="name">The display name of the plan.</param>
-	/// <param name="rateLimit">The rate limit policy for the plan.</param>
-	/// <param name="entitlements">The entitlements granted by the plan.</param>
-	public Plan(PlanId id, string name, RateLimitPolicy rateLimit, IReadOnlyList<Entitlement> entitlements)
-	{
-		Id = id;
-		Name = name;
-		RateLimit = rateLimit;
-		Entitlements = entitlements;
-	}
+	/// <summary>List of entitlements included in the plan.</summary>
+	public IReadOnlyList<Entitlement> Entitlements { get; init; } = entitlements;
 }
 
 /// <summary>
-/// Represents a tenant (customer or organization) in the system.
+/// Tenant info (minimal). The paying customer (organization or user).
 /// </summary>
-public record Tenant
+public record Tenant(TenantId id, string name, PlanId planId, bool active)
 {
-	/// <summary>
-	/// The unique identifier for the tenant.
-	/// </summary>
-	public TenantId Id { get; init; }
+	/// <summary>Tenant identifier.</summary>
+	public TenantId Id { get; init; } = id;
 
-	/// <summary>
-	/// The display name of the tenant.
-	/// </summary>
-	public string Name { get; init; }
+	/// <summary>Display name for the tenant.</summary>
+	public string Name { get; init; } = name;
 
-	/// <summary>
-	/// The identifier of the plan assigned to the tenant.
-	/// </summary>
-	public PlanId PlanId { get; init; }
+	/// <summary>Plan identifier assigned to the tenant.</summary>
+	public PlanId PlanId { get; init; } = planId;
 
-	/// <summary>
-	/// Indicates whether the tenant is active and allowed to use the system.
-	/// </summary>
-	public bool Active { get; init; }
-
-	/// <summary>
-	/// Initializes a new instance of the <see cref="Tenant"/> record.
-	/// </summary>
-	/// <param name="id">The unique identifier for the tenant.</param>
-	/// <param name="name">The display name of the tenant.</param>
-	/// <param name="planId">The identifier of the plan assigned to the tenant.</param>
-	/// <param name="active">Whether the tenant is active.</param>
-	public Tenant(TenantId id, string name, PlanId planId, bool active)
-	{
-		Id = id;
-		Name = name;
-		PlanId = planId;
-		Active = active;
-	}
+	/// <summary>Whether the tenant is active (can be billed/served).</summary>
+	public bool Active { get; init; } = active;
 }
 
 /// <summary>
-/// Minimal request descriptor for quota decisions. No HTTP types on purpose.
+/// Attribution information carried with requests to indicate payer/subject/sponsor context.
 /// </summary>
-public record RequestDescriptor
+public sealed record Attribution(TenantId payer, TenantId subject, string? sponsor = null, string actorType = "customer")
 {
-	/// <summary>
-	/// The logical method or verb of the request (e.g., "POST", "GET").
-	/// </summary>
-	public string Method { get; init; }
+	/// <summary>Payer tenant identifier.</summary>
+	public TenantId Payer { get; init; } = payer;
 
-	/// <summary>
-	/// The logical path or resource identifier for the request.
-	/// </summary>
-	public string Path { get; init; }
+	/// <summary>Subject tenant identifier (who the action concerns).</summary>
+	public TenantId Subject { get; init; } = subject;
 
-	/// <summary>
-	/// The UTC timestamp when the request was made.
-	/// </summary>
-	public DateTimeOffset TimestampUtc { get; init; }
+	/// <summary>Optional sponsor identifier (free-form).</summary>
+	public string? Sponsor { get; init; } = sponsor;
 
-	/// <summary>
-	/// An optional logical endpoint key for advanced routing or quota partitioning.
-	/// </summary>
-	public string? EndpointKey { get; init; }
-
-	/// <summary>
-	/// Initializes a new instance of the <see cref="RequestDescriptor"/> record.
-	/// </summary>
-	/// <param name="method">The logical method or verb of the request.</param>
-	/// <param name="path">The logical path or resource identifier.</param>
-	/// <param name="timestampUtc">The UTC timestamp of the request.</param>
-	/// <param name="endpointKey">An optional logical endpoint key.</param>
-	public RequestDescriptor(string method, string path, DateTimeOffset timestampUtc, string? endpointKey = null)
-	{
-		Method = method;
-		Path = path;
-		TimestampUtc = timestampUtc;
-		EndpointKey = endpointKey;
-	}
+	/// <summary>Classification of the actor (e.g., "customer", "partner", "service:billing").</summary>
+	public string ActorType { get; init; } = actorType;
 }
 
 /// <summary>
-/// Result of a quota evaluation for the current window.
+/// A minimal request descriptor used by quota evaluators (no HTTP types).
 /// </summary>
-public record QuotaDecision
+public record RequestDescriptor(string method, string path, DateTimeOffset timestampUtc, string? endpointKey = null, decimal weight = 1m)
 {
-	/// <summary>
-	/// Indicates whether the request is allowed under the current quota.
-	/// </summary>
-	public bool Allowed { get; init; }
+	/// <summary>HTTP method or logical action.</summary>
+	public string Method { get; init; } = method;
+
+	/// <summary>Request path or logical route.</summary>
+	public string Path { get; init; } = path;
+
+	/// <summary>Request timestamp (UTC) used for window alignment.</summary>
+	public DateTimeOffset TimestampUtc { get; init; } = timestampUtc;
+
+	/// <summary>Optional logical endpoint key (e.g., "charges.create").</summary>
+	public string? EndpointKey { get; init; } = endpointKey;
 
 	/// <summary>
-	/// The maximum number of permitted actions in the current window.
+	/// Weight (cost) of the request used for quota consumption and metering.
+	/// Defaults to 1.0 for typical requests; fractional weights allow metered consumption.
 	/// </summary>
-	public int Limit { get; init; }
-
-	/// <summary>
-	/// The number of remaining permitted actions in the current window.
-	/// </summary>
-	public int Remaining { get; init; }
-
-	/// <summary>
-	/// The UTC timestamp when the current quota window resets.
-	/// </summary>
-	public DateTimeOffset ResetUtc { get; init; }
-
-	/// <summary>
-	/// Initializes a new instance of the <see cref="QuotaDecision"/> record.
-	/// </summary>
-	/// <param name="allowed">Whether the request is allowed.</param>
-	/// <param name="limit">The maximum number of permitted actions.</param>
-	/// <param name="remaining">The number of remaining permitted actions.</param>
-	/// <param name="resetUtc">The UTC timestamp when the quota resets.</param>
-	public QuotaDecision(bool allowed, int limit, int remaining, DateTimeOffset resetUtc)
-	{
-		Allowed = allowed;
-		Limit = limit;
-		Remaining = remaining;
-		ResetUtc = resetUtc;
-	}
+	public decimal Weight { get; init; } = weight;
 }
 
 /// <summary>
-/// Result of API key validation. Reason is a human-friendly string only for diagnostics.
+/// Result of a quota evaluation for a request.
 /// </summary>
-public record ApiKeyValidationResult
+public record QuotaDecision(bool allowed, int limit, int remaining, DateTimeOffset resetUtc, TimeSpan? retryAfter = null)
 {
-	/// <summary>
-	/// Indicates whether the API key is valid.
-	/// </summary>
-	public bool Valid { get; init; }
+	/// <summary>True if the request is allowed at the time of evaluation.</summary>
+	public bool Allowed { get; init; } = allowed;
 
-	/// <summary>
-	/// The tenant ID associated with the API key, if valid.
-	/// </summary>
-	public TenantId? TenantId { get; init; }
+	/// <summary>The effective limit for the current window (including burst if applicable).</summary>
+	public int Limit { get; init; } = limit;
 
-	/// <summary>
-	/// The API key ID, if available.
-	/// </summary>
-	public ApiKeyId? KeyId { get; init; }
+	/// <summary>Permits remaining after applying this request.</summary>
+	public int Remaining { get; init; } = remaining;
 
-	/// <summary>
-	/// A human-friendly reason for the validation result, for diagnostics.
-	/// </summary>
-	public string? Reason { get; init; }
+	/// <summary>UTC time when the current window resets.</summary>
+	public DateTimeOffset ResetUtc { get; init; } = resetUtc;
 
-	/// <summary>
-	/// Initializes a new instance of the <see cref="ApiKeyValidationResult"/> record.
-	/// </summary>
-	/// <param name="valid">Whether the API key is valid.</param>
-	/// <param name="tenantId">The tenant ID associated with the key.</param>
-	/// <param name="keyId">The API key ID.</param>
-	/// <param name="reason">A human-friendly reason for diagnostics.</param>
-	public ApiKeyValidationResult(bool valid, TenantId? tenantId, ApiKeyId? keyId, string? reason)
-	{
-		Valid = valid;
-		TenantId = tenantId;
-		KeyId = keyId;
-		Reason = reason;
-	}
+	/// <summary>Optional retry-after duration that callers can return to clients.</summary>
+	public TimeSpan? RetryAfter { get; init; } = retryAfter;
+}
+
+/// <summary>
+/// Result of API key validation.
+/// </summary>
+public record ApiKeyValidationResult(bool valid, TenantId? tenantId, ApiKeyId? keyId, string? reason)
+{
+	/// <summary>True when the presented key was valid.</summary>
+	public bool Valid { get; init; } = valid;
+
+	/// <summary>Tenant id mapped to the presented key (if valid).</summary>
+	public TenantId? TenantId { get; init; } = tenantId;
+
+	/// <summary>Internal id for the API key (implementation detail).</summary>
+	public ApiKeyId? KeyId { get; init; } = keyId;
+
+	/// <summary>Optional human-friendly reason for failure (diagnostics only).</summary>
+	public string? Reason { get; init; } = reason;
+}
+
+/// <summary>
+/// A token returned when an idempotency reservation wins the race. The caller should later commit the canonical response.
+/// </summary>
+public sealed record IdempotencyReservation(string reservationId, DateTimeOffset expiresAt)
+{
+	/// <summary>Opaque reservation identifier.</summary>
+	public string ReservationId { get; init; } = reservationId;
+
+	/// <summary>Expiration time for the reservation (UTC).</summary>
+	public DateTimeOffset ExpiresAt { get; init; } = expiresAt;
+}
+
+/// <summary>
+/// Represents a previously committed response for an idempotent key that can be replayed to duplicates.
+/// </summary>
+public sealed record IdempotencyReplay(int httpStatus, IReadOnlyDictionary<string, string> headers, byte[] body)
+{
+	/// <summary>HTTP status code of the saved response.</summary>
+	public int HttpStatus { get; init; } = httpStatus;
+
+	/// <summary>Headers that should be replayed to the duplicate request.</summary>
+	public IReadOnlyDictionary<string, string> Headers { get; init; } = headers;
+
+	/// <summary>Response body bytes to replay.</summary>
+	public byte[] Body { get; init; } = body;
 }

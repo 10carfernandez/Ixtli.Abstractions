@@ -13,7 +13,7 @@ public sealed class FixedQuotaEvaluator : IQuotaEvaluator
 {
 	private readonly ConcurrentDictionary<(TenantId Tenant, DateTimeOffset WindowStart), int> _counts = new();
 
-	public Task<QuotaDecision> CheckAsync(TenantId tenant, Plan plan, RequestDescriptor req, CancellationToken ct = default)
+	public Task<QuotaDecision> CheckAsync(TenantId tenant, Plan plan, RequestDescriptor req, decimal weight = 1m, CancellationToken cancellationToken = default)
 	{
 		var (windowStart, windowEnd) = GetWindowBounds(req.TimestampUtc, plan.RateLimit.Window);
 		int limit = plan.RateLimit.PermitLimit + (plan.RateLimit.Burst ?? 0);

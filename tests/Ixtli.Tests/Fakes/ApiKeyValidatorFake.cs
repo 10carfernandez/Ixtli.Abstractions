@@ -1,6 +1,9 @@
 ﻿#nullable enable
 namespace Ixtli.Tests.Fakes;
 
+/// <summary>
+/// Simple in-memory API key validator used by tests.
+/// </summary>
 public sealed class ApiKeyValidatorFake : IApiKeyValidator
 {
 	private readonly IReadOnlyDictionary<string, (TenantId Tenant, ApiKeyId KeyId)> _map;
@@ -8,7 +11,7 @@ public sealed class ApiKeyValidatorFake : IApiKeyValidator
 	public ApiKeyValidatorFake(IReadOnlyDictionary<string, (TenantId, ApiKeyId)> map)
 		=> _map = map;
 
-	public Task<ApiKeyValidationResult> ValidateAsync(string presentedKey, CancellationToken ct = default)
+	public Task<ApiKeyValidationResult> ValidateAsync(string presentedKey, CancellationToken cancellationToken = default)
 	{
 		if (_map.TryGetValue(presentedKey, out var tuple))
 		{

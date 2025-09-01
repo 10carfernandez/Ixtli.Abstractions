@@ -3,6 +3,7 @@ using FluentAssertions;
 using Ixtli;
 using Ixtli.Tests.Fakes;
 
+// Original: :contentReference[oaicite:10]{index=10}
 public class SequenceHappyPathTests
 {
 	[Fact]
@@ -24,11 +25,7 @@ public class SequenceHappyPathTests
 		var tenantDto = new Tenant(id: tenant, name: "Acme Co", planId: planId, active: true);
 
 		// 3) Plan info (pretend we fetched it)
-		var plan = new Plan(
-			id: planId,
-			name: "Starter",
-			rateLimit: new RateLimitPolicy(permitLimit: 2, window: RateLimitWindow.Minute),
-			entitlements: Array.Empty<Entitlement>());
+		var plan = new Plan(planId, "Starter", new RateLimitPolicy(2, RateLimitWindow.Minute), Array.Empty<Entitlement>());
 
 		// 4) Quota check
 		var evaluator = new FixedQuotaEvaluator();
@@ -37,14 +34,20 @@ public class SequenceHappyPathTests
 		var q1 = await evaluator.CheckAsync(tenantDto.Id, plan, new RequestDescriptor(method: "POST", path: "/charges", timestampUtc: now, endpointKey: "charges.create"));
 		q1.Allowed.Should().BeTrue();
 
-		// 5) Idempotency record (first time ok; duplicate denied by store)
+		// 5) Idempotency reserve -> commit -> replay
 		var store = new InMemoryIdempotencyStore();
 		var idKey = new IdempotencyKey("charges:create:abc");
 
-		var first = await store.TryRecordAsync(tenant, idKey, now.AddMinutes(10));
-		first.Should().BeTrue();
+		var reservation = await store.TryBeginAsync(tenant, idKey, now.AddMinutes(10));
+		reservation.Should().NotBeNull();
 
-		var dup = await store.TryRecordAsync(tenant, idKey, now.AddMinutes(10));
-		dup.Should().BeFalse();
+		var headers = new Dictionary<string, string> { ["Content-Type"] = "application/json" };
+		var body = System.Text.Encoding.UTF8.GetBytes("{\"ok\":true}");
+
+		await store.TryCommitAsync(tenant, idKey, 201, headers, new ReadOnlyMemory<byte>(body));
+
+		var replay = await store.TryGetReplayAsync(tenant, idKey);
+		replay.Should().NotBeNull();
+		replay!.HttpStatus.Should().Be(201);
 	}
 }
